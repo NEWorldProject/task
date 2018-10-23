@@ -8,10 +8,16 @@
 int main(){
     promise<int> i {};
     auto fut = i.get_future();
-    std::thread([&i]() {
+    std::thread([i = std::move(i)]() mutable {
         std::this_thread::sleep_for(std::chrono::seconds(2));
-        i.set_exception(std::make_exception_ptr(std::runtime_error("wertutueyrweurui")));
-    }).();
+        i.set_value(23124324);
+        try {
+            i.set_exception(std::make_exception_ptr(std::runtime_error("wertutueyrweurui")));
+        }
+        catch (std::exception& e) {
+            std::cout << e.what() << std::endl;
+        }
+    }).join();
     std::cout << fut.get() << std::endl;
 
     /*namespace ctx=boost::context;
