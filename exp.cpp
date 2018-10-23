@@ -6,11 +6,13 @@
 #include "Library/future.h"
 
 int main(){
-    promise<int> i {};
-    auto fut = i.get_future();
+    promise<void> i {};
+    auto fut = i.get_future().then([](auto&& fut) {
+        std::cout << "done"<< std::endl;
+    });
     std::thread([i = std::move(i)]() mutable {
         std::this_thread::sleep_for(std::chrono::seconds(2));
-        i.set_value(23124324);
+        i.set_value();
         try {
             i.set_exception(std::make_exception_ptr(std::runtime_error("wertutueyrweurui")));
         }
@@ -18,7 +20,6 @@ int main(){
             std::cout << e.what() << std::endl;
         }
     }).join();
-    std::cout << fut.get() << std::endl;
 
     /*namespace ctx=boost::context;
     int a;

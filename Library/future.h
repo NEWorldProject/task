@@ -1,14 +1,22 @@
 #pragma once
 
-#include <cstddef>
 #include <mutex>
-#include <condition_variable>
-#if __has_include("x86intrin.h")
-#include <x86intrin.h>
-#elif __has_include("intrin.h")
-#include <intrin.h>
-#endif
 #include <thread>
+#include <cstddef>
+#include <type_traits>
+#include <condition_variable>
+
+#if __has_include(<x86intrin.h>)
+#include <x86intrin.h>
+#define IDLE _mm_pause()
+#elif __has_include(<intrin.h>)
+#include <intrin.h>
+#define IDLE _mm_pause()
+#else
+#define IDLE
+#endif
+
+#include "task.h"
 
 constexpr int hardware_destructive_interference_size = 64;
 
@@ -51,12 +59,18 @@ public:
         __complete_write();
     }
 
+    void set_exception_suppress_check(std::exception_ptr p) {
+        __prepare_write_suppress_check();
+        __excp = p;
+        __complete_write_suppress_check();
+    }
+
     void __acquire() noexcept { __ref.fetch_add(1); }
 
     void __release() noexcept { if (__ref.fetch_sub(1)==1) delete this; }
 private:
     // state control
-    alignas(hardware_destructive_interference_size) mutable std::atomic<uintptr_t> __lock{0};
+    mutable std::atomic<uintptr_t> __lock{0};
 
     enum __lck_bits {
         spin_bit = 0b1,
@@ -93,7 +107,7 @@ private:
         size_t __iters = 0;
         for (;;) {
             while (__check_write_bit() && (!__check_ready_bit()))
-                if (++__iters<100) _mm_pause(); else std::this_thread::yield();
+                if (++__iters<100) IDLE; else std::this_thread::yield();
             if (__check_ready_bit()) return false;
             auto _ = __lock.load();
             if (__lock.compare_exchange_strong(_, _ | write_bit, std::memory_order_acquire)) return true;
@@ -107,7 +121,7 @@ private:
     void __acquire_spin_lock() const noexcept {
         size_t __iters = 0;
         for (;;) {
-            while (__check_spin_lock()) if (++__iters<100) _mm_pause(); else std::this_thread::yield();
+            while (__check_spin_lock()) if (++__iters<100) IDLE; else std::this_thread::yield();
             auto _ = __lock.load();
             if (__lock.compare_exchange_strong(_, _ | spin_bit, std::memory_order_acquire)) return;
         }
@@ -128,9 +142,18 @@ protected:
         if (!success) future_error::__throw(future_errc::promise_already_satisfied);
     }
 
-    void __complete_write() {
+    void __complete_write() noexcept {
         __lock.fetch_or(ready_bit);
         __notify_if_has_pmr();
+        __fire_task();
+    }
+
+    void __prepare_write_suppress_check() noexcept { }
+
+    void __complete_write_suppress_check() noexcept {
+        __lock.fetch_or(ready_bit | write_bit);
+        __notify_if_has_pmr();
+        __fire_task();
     }
 
     void __cancel_write() noexcept { __lock.fetch_and(~uintptr_t(write_bit)); }
@@ -169,7 +192,6 @@ private:
     bool __check_ready_not_expire() const noexcept { return __check_ready_bit() && __check_write_bit(); }
 
     void __make_expire() noexcept { __lock.fetch_and(~uintptr_t(write_bit)); }
-
 protected:
     void __prepare_get() {
         wait();
@@ -186,13 +208,39 @@ protected:
 
     void __revert_expire() noexcept { __lock.fetch_or(write_bit); }
 public:
-    bool __is_satisfied() const noexcept {return __check_ready_bit(); }
+    bool __is_satisfied() const noexcept { return __check_ready_bit(); }
     bool valid() const noexcept { return !(__check_write_bit() && (!__check_write_bit())); }
+    // Continable
+public:
+    struct __task : task {
+        bool __call_inplace = true;
+    };
+
+    void __set_task(__task* _task) noexcept {
+        auto prev = __contiune.exchange(_task);
+        if (prev) __fire_task();
+    }
+private:
+    std::atomic<__task*> __contiune{nullptr};
+
+    __task* __get_task() noexcept { return __contiune.exchange(reinterpret_cast<__task*>(uintptr_t(~0))); }
+
+    static void __thread_pool_dispatch_one_with_current_piro(task*) { }
+
+    void __fire_task() noexcept {
+        if (auto __task = __get_task(); __task) {
+            if (__task->__call_inplace)
+                __task->fire();
+            else
+                __thread_pool_dispatch_one_with_current_piro(__task);
+        }
+    }
+public:
     virtual ~__shared_assoc_state_base() { delete __get_pmr_address(); }
 };
 
 template <class T>
-class __shared_assoc_state final: public __shared_assoc_state_base {
+class __shared_assoc_state final : public __shared_assoc_state_base {
 public:
     ~__shared_assoc_state() { reinterpret_cast<T*>(&__val)->~T(); }
 
@@ -226,6 +274,18 @@ public:
         __complete_write();
     }
 
+    void set_value_suppress_check(T&& v) noexcept(std::is_nothrow_move_constructible_v<T>) {
+        __prepare_write_suppress_check();
+        new(&__val) T(std::forward<T>(v));
+        __complete_write_suppress_check();
+    }
+
+    void set_value_suppress_check(const T& v) noexcept(std::is_nothrow_copy_constructible_v<T>) {
+        __prepare_write_suppress_check();
+        new(&__val) T(v);
+        __complete_write_suppress_check();
+    }
+
     T get() {
         __prepare_get();
         if constexpr(std::is_nothrow_move_constructible_v<T>)
@@ -244,12 +304,18 @@ private:
 };
 
 template <class T>
-class __shared_assoc_state<T&> final: public __shared_assoc_state_base {
+class __shared_assoc_state<T&> final : public __shared_assoc_state_base {
 public:
     void set_value(T& v) {
         __prepare_write();
         __val = std::addressof(v);
         __complete_write();
+    }
+
+    void set_value_suppress_check(T& v) noexcept {
+        __prepare_write_suppress_check();
+        __val = std::addressof(v);
+        __complete_write_suppress_check();
     }
 
     T& get() {
@@ -261,11 +327,16 @@ private:
 };
 
 template <>
-class __shared_assoc_state<void> final: public __shared_assoc_state_base {
+class __shared_assoc_state<void> final : public __shared_assoc_state_base {
 public:
     void set_value() {
         __prepare_write();
         __complete_write();
+    }
+
+    void set_value_suppress_check() noexcept {
+        __prepare_write_suppress_check();
+        __complete_write_suppress_check();
     }
 
     void get() { __prepare_get(); }
@@ -275,97 +346,162 @@ template <class T>
 class __promise_base;
 
 template <class T>
-class future {
-    friend class __promise_base<T>;
-    explicit future(__shared_assoc_state<T>* _) noexcept
+class future;
+
+template <class T>
+class promise;
+
+template <class T>
+class __future_base {
+protected:
+    explicit __future_base(__shared_assoc_state<T>* _) noexcept
             :__st(_) { __st->__acquire(); }
+private:
+    template <class Func>
+    struct __pad final : __shared_assoc_state_base::__task {
+        using __result_t = std::result_of_t<std::decay_t<Func>(future<T>)>;
+        explicit __pad(Func& fn)
+                :__fn(std::move(fn)) { }
+        void fire() override;
+        void __invoke() noexcept(noexcept(__fn(__st)));
+        Func __fn;
+        promise<__result_t> __promise;
+        future<T> __st;
+    };
 public:
-    ~future() { if (__st) __st->__release(); }
+    __future_base() = default;
+
+    __future_base(__future_base&& other) noexcept
+            :__st(other.__st) { other.__st = nullptr; }
+
+    __future_base& operator=(__future_base&& other) noexcept {
+        if (this!=std::addressof(other)) {
+            __st = other.__st;
+            other.__st = nullptr;
+        }
+        return *this;
+    }
+    __future_base(const __future_base&) = delete;
+
+    __future_base& operator=(const __future_base&) = delete;
+
+    ~__future_base() { __release_state(); }
 
     bool valid() const noexcept { return __st; }
 
-    auto get() { return __st->get(); }
+    bool is_ready() const noexcept { return __st->is_ready(); }
 
-    void wait() { __st->wait(); }
+    void wait() const { __st->wait(); }
 
     template <class _Clock, class _Duration>
     bool wait_until(const std::chrono::time_point<_Clock, _Duration>& __time) const { return __st->wait_until(__time); }
 
     template <class _Rep, class _Period>
     bool wait_for(const std::chrono::duration<_Rep, _Period>& __rel_time) const { return __st->wait_until(__rel_time); }
-private:
+
+    template <class Func>
+    future<typename __pad<Func>::__result_t> then(Func fn) {
+        auto __task = new __pad<Func>(fn);
+        __task->__st = future(nullptr, __st);
+        __st->__set_task(__task);
+        __st = nullptr;
+        return __task->__promise.get_future();
+    }
+protected:
+    void __release_state() noexcept {
+        if (__st) {
+            __st->__release();
+            __st = nullptr;
+        }
+    }
+
+    struct __release_guard {
+        explicit __release_guard(__future_base* _) noexcept
+                :__this(_) { }
+        __release_guard(__release_guard&&) = delete;
+        __release_guard& operator=(__release_guard&&) = delete;
+        ~__release_guard() noexcept { __this->__release_state(); }
+        __future_base* __this;
+    };
+
+    auto __create_guard() noexcept { return __release_guard(this); }
+
     __shared_assoc_state<T>* __st = nullptr;
 };
 
 template <class T>
-class future<T&> {
-    friend class __promise_base<T&>;
-    explicit future(__shared_assoc_state<T&>* _) noexcept
-            :__st(_) { __st->__acquire(); }
+class future : public __future_base<T> {
+    friend class __promise_base<T>;
+    friend class __future_base<T>;
+    explicit future(__shared_assoc_state<T>* _) noexcept
+            :__future_base<T>(_) { }
+
+    future(std::nullptr_t, __shared_assoc_state<T>* _) noexcept { __future_base<T>::template __st = _; }
 public:
-    ~future() { if (__st) __st->__release(); }
+    future() noexcept = default;
+    auto get() {
+        auto _ = __future_base<T>::template __create_guard();
+        return __future_base<T>::template __st->get();
+    }
+};
 
-    bool valid() const noexcept { return __st; }
+template <class T>
+class future<T&> : public __future_base<T&> {
+    friend class __promise_base<T&>;
+    friend class __future_base<T&>;
+    future<T&> __move_get()&& { return std::move(*this); }
+    explicit future(__shared_assoc_state<T&>* _) noexcept
+            :__future_base<T&>(_) { }
 
-    auto& get() { return __st->get(); }
-
-    void wait() { __st->wait(); }
-
-    template <class _Clock, class _Duration>
-    bool wait_until(const std::chrono::time_point<_Clock, _Duration>& __time) const { return __st->wait_until(__time); }
-
-    template <class _Rep, class _Period>
-    bool wait_for(const std::chrono::duration<_Rep, _Period>& __rel_time) const { return __st->wait_until(__rel_time); }
-private:
-    __shared_assoc_state<T&>* __st = nullptr;
+    future(std::nullptr_t, __shared_assoc_state<T&>* _) noexcept { __future_base<T&>::template __st = _; }
+public:
+    future() noexcept = default;
+    auto& get() {
+        auto _ = __future_base<T&>::template __create_guard();
+        return __future_base<T&>::template __st->get();
+    }
 };
 
 template <>
-class future<void> {
+class future<void> : public __future_base<void> {
     friend class __promise_base<void>;
+    friend class __future_base<void>;
     explicit future(__shared_assoc_state<void>* _) noexcept
-            :__st(_) { __st->__acquire(); }
+            :__future_base<void>(_) { }
+
+    future(std::nullptr_t, __shared_assoc_state<void>* _) noexcept { __st = _; }
 public:
-    ~future() { if (__st) __st->__release(); }
-
-    bool valid() const noexcept { return __st; }
-
-    void wait() { __st->wait(); }
-
-    void get() { __st->get(); }
-
-    template <class _Clock, class _Duration>
-    bool wait_until(const std::chrono::time_point<_Clock, _Duration>& __time) const { return __st->wait_until(__time); }
-
-    template <class _Rep, class _Period>
-    bool wait_for(const std::chrono::duration<_Rep, _Period>& __rel_time) const { return __st->wait_until(__rel_time); }
-private:
-    __shared_assoc_state<void>* __st = nullptr;
+    future() noexcept = default;
+    void get() {
+        auto _ = __create_guard();
+        __st->get();
+    }
 };
 
 template <class T>
 class __promise_base {
 public:
     __promise_base() = default;
-    
+
     __promise_base(__promise_base&& other) noexcept
             :__st(other.__st) { other.__st = nullptr; }
 
     __promise_base& operator=(__promise_base&& other) noexcept {
         if (this!=std::addressof(other)) {
             __st = other.__st;
-            other.st = nullptr;
+            other.__st = nullptr;
         }
         return *this;
     }
+
     __promise_base(const __promise_base&) = delete;
 
     __promise_base& operator=(const __promise_base&) = delete;
 
-    ~__promise_base() {
+    ~__promise_base() noexcept {
         if (__st) {
             if (!__st->__is_satisfied())
-                set_exception(std::make_exception_ptr(future_error(future_errc::broken_promise)));
+                set_exception_suppress_check(std::make_exception_ptr(future_error(future_errc::broken_promise)));
             __st->__release();
         }
     }
@@ -373,6 +509,8 @@ public:
     future<T> get_future() { return future<T>(__st); }
 
     void set_exception(std::exception_ptr p) { __st->set_exception(p); };
+
+    void set_exception_suppress_check(std::exception_ptr p) noexcept { __st->set_exception_suppress_check(p); }
 protected:
     __shared_assoc_state<T>& __get_state() {
         if (__st) return *__st;
@@ -393,16 +531,56 @@ public:
     void set_value(T&& v) { __promise_base<T>::template __get_state().set_value(std::move(v)); }
 
     void set_value(const T& v) { __promise_base<T>::template __get_state().set_value(v); }
+
+    void set_value_suppress_check(T&& v) noexcept(std::is_nothrow_move_constructible_v<T>) {
+        __promise_base<T>::template __get_state().set_value_suppress_check(std::move(v));
+    }
+
+    void set_value_suppress_check(const T& v) noexcept(std::is_nothrow_copy_constructible_v<T>) {
+        __promise_base<T>::template __get_state().set_value_suppress_check(v);
+    }
 };
 
 template <class T>
 class promise<T&> : public __promise_base<T&> {
 public:
     void set_value(T& v) { __promise_base<T&>::template __get_state().set_value(v); }
+
+    void set_value_suppress_check(T& v) noexcept {
+        __promise_base<T&>::template __get_state().set_value_suppress_check(v);
+    }
 };
 
 template <>
 class promise<void> : public __promise_base<void> {
 public:
     void set_value() { __get_state().set_value(); }
+
+    void set_value_suppress_check() noexcept { __get_state().set_value_suppress_check(); }
 };
+
+template <class T>
+template <class Func>
+void __future_base<T>::__pad<Func>::fire() {
+    if constexpr(noexcept(__fn(__st)))
+        __invoke();
+    else
+        try {
+            __invoke();
+        }
+        catch (...) {
+            __promise.set_exception_suppress_check(std::current_exception());
+        }
+    delete this;
+}
+
+template <class T>
+template <class Func>
+void __future_base<T>::__pad<Func>::__invoke() noexcept(noexcept(__fn(__st))) {
+    if constexpr (std::is_same_v<__result_t, void>) {
+        __fn(this->__st);
+        __promise.set_value_suppress_check();
+    }
+    else
+        __promise.set_value_suppress_check(__fn(__st));
+}
