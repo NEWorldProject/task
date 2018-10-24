@@ -213,7 +213,7 @@ public:
     // Continable
 public:
     struct __task : task {
-        bool __call_inplace = true;
+        bool __call_inplace = false;
     };
 
     void __set_task(__task* _task) noexcept {
@@ -225,7 +225,9 @@ private:
 
     __task* __get_task() noexcept { return __contiune.exchange(reinterpret_cast<__task*>(uintptr_t(~0))); }
 
-    static void __thread_pool_dispatch_one_with_current_piro(task*) { }
+    static void __thread_pool_dispatch_one_with_current_piro(task* __task) {
+        enqueue_one(__task, get_current_thread_priority());
+    }
 
     void __fire_task() noexcept {
         if (auto __task = __get_task(); __task) {
@@ -362,7 +364,7 @@ private:
         using __result_t = std::result_of_t<std::decay_t<Func>(future<T>)>;
         explicit __pad(Func& fn)
                 :__fn(std::move(fn)) { }
-        void fire() override;
+        void fire() noexcept override;
         void __invoke() noexcept(noexcept(__fn(__st)));
         Func __fn;
         promise<__result_t> __promise;
@@ -561,7 +563,7 @@ public:
 
 template <class T>
 template <class Func>
-void __future_base<T>::__pad<Func>::fire() {
+void __future_base<T>::__pad<Func>::fire() noexcept {
     if constexpr(noexcept(__fn(__st)))
         __invoke();
     else

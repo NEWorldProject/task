@@ -5,6 +5,17 @@
 #include <iostream>
 #include "Library/future.h"
 
+/*template <class Func, class ...Ts>
+void async_invoke(Func __fn, Ts&&... args) {
+    constexpr bool __noexcept_inv = noexcept(__fn(std::forward<Ts>(args)...));
+    using __result_t = std::result_of_t<std::decay_t<Func>(Ts...)>;
+    promise<__result_t> __promise;
+    try {
+
+    }
+
+}*/
+
 int main(){
     promise<void> i {};
     auto fut = i.get_future().then([](auto&& fut) {

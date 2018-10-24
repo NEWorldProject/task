@@ -12,4 +12,4 @@ target_include_directories(task PRIVATE ${Boost_INCLUDE_DIR})
 target_link_libraries(task ${Boost_LIBRARIES})
 
 add_executable(task_exp exp.cpp)
-target_link_libraries(task_exp PRIVATE Boost::context)
+target_link_libraries(task_exp PRIVATE Boost::context task)
