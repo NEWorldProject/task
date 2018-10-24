@@ -1,7 +1,5 @@
-#include <memory>
 #include <atomic>
 #include <thread>
-#include <queue>
 #include <vector>
 #include "task.h"
 
@@ -18,7 +16,7 @@
 
 #define MAX_WAIT_ITERS 50
 
-constexpr int PriorityLevels = 32;
+constexpr int PriorityLevels = 16;
 constexpr int hardware_destructive_interference_size = 64;
 
 class SpinLock {
@@ -26,12 +24,11 @@ public:
     void Enter() noexcept { while (Locked.exchange(true, std::memory_order_acquire)) WaitUntilLockIsFree(); }
 
     void Leave() noexcept { Locked.store(false, std::memory_order_relaxed); }
-
 private:
-    void WaitUntilLockIsFree() const noexcept{
-        size_t numIters = 0;
+    void WaitUntilLockIsFree() const noexcept {
+        size_t iters = 0;
         while (Locked.load(std::memory_order_relaxed)) {
-            if (numIters++ < MAX_WAIT_ITERS)
+            if (iters++<MAX_WAIT_ITERS)
                 IDLE;
             else
                 std::this_thread::yield();
@@ -40,36 +37,45 @@ private:
     alignas(hardware_destructive_interference_size) std::atomic_bool Locked = {false};
 };
 
-class ASyncTaskQueue {
+class TaskQueue {
 public:
-    void EnqueueOne(task* dispatchee) { _Queue.push(dispatchee); }
+    void EnqueueOne(task* dispatchee) noexcept {
+        if (!_Head)
+            _Head = _Tail = dispatchee;
+        else {
+            _Tail->__next = dispatchee;
+            _Tail = dispatchee;
+        }
+    }
 
-    task* DequeueOne() {
-        task* ret = nullptr;
-        if (!Empty()) {
-            ret = _Queue.front();
-            _Queue.pop();
+    task* DequeueOne() noexcept {
+        auto ret = _Head;
+        if (ret) {
+            _Head = _Head->__next;
+            Orphan(ret);
         }
         return ret;
     }
 
-    bool Empty() const noexcept { return _Queue.empty(); }
+    bool Empty() const noexcept { return _Head->__next; }
 private:
-    std::queue<task*> _Queue {};
+    task* _Head = nullptr, * _Tail = nullptr;
+
+    static void Orphan(task* _) noexcept { _->__next = _->__prev = nullptr; }
 };
 
 class BasicDispatcher {
 public:
-    void EnqueueOne(task* dispatchee, int level) {
+    void EnqueueOne(task* dispatchee, int level) noexcept {
         _Lock.Enter();
         _DispatchQueues[level].EnqueueOne(dispatchee);
         _Lock.Leave();
     }
 
-    task* DispatchOne() {
+    task* DispatchOne() noexcept {
         task* ret = nullptr;
         _Lock.Enter();
-        for(int i = PriorityLevels - 1; i > -1; --i)
+        for (int i = PriorityLevels-1; i>-1; --i)
             if (ret = _DispatchQueues[i].DequeueOne(), ret)
                 break;
         _Lock.Leave();
@@ -77,17 +83,18 @@ public:
     }
 private:
     SpinLock _Lock;
-    std::array<ASyncTaskQueue, PriorityLevels> _DispatchQueues;
+    std::array<TaskQueue, PriorityLevels> _DispatchQueues;
 };
 
 class ThreadGroup {
 public:
-    template<class Func>
+    template <class Func>
     explicit ThreadGroup(Func fn) {
         for (auto i = 0; i<std::thread::hardware_concurrency(); ++i)
             _Threads.emplace_back(fn);
     }
-    ~ThreadGroup() {
+
+    ~ThreadGroup() noexcept {
         for (auto&& x : _Threads)
             if (x.joinable())
                 x.join();
@@ -97,12 +104,9 @@ private:
 };
 
 class ThreadPool {
-    struct : task {
-        ThreadPool* _Pool = nullptr;
-        void fire() noexcept override { _Pool->_Stop = true; }
-    } _StopTask;
 public:
-    ThreadPool() : _Threads([this](){Worker();}) { _StopTask._Pool = this; }
+    ThreadPool()
+            :_Threads([this]() { Worker(); }) { _StopTask._Pool = this; }
 
     ~ThreadPool() {
         EnqueueOne(&_StopTask, 0);
@@ -131,8 +135,8 @@ private:
     task* GetJob() {
         task* job = nullptr;
         size_t iter = 0;
-        while (!_Stop && (job = _Dispatcher.DispatchOne()) == nullptr) {
-            if (iter++ < MAX_WAIT_ITERS)
+        while (!_Stop && (job = _Dispatcher.DispatchOne())==nullptr) {
+            if (iter++<MAX_WAIT_ITERS)
                 IDLE;
             else {
                 ThreadEnterIdleRegion();
@@ -148,6 +152,11 @@ private:
             _Cond.notify_one();
         }
     }
+
+    struct : task {
+        ThreadPool* _Pool = nullptr;
+        void fire() noexcept override { _Pool->_Stop = true; }
+    } _StopTask;
 
     bool _Stop = false;
     std::mutex _Mtx;

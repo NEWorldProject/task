@@ -16,21 +16,16 @@ void async_invoke(Func __fn, Ts&&... args) {
 
 }*/
 
-int main(){
-    promise<void> i {};
+int main() {
+    promise<void> i{};
     auto fut = i.get_future().then([](auto&& fut) {
-        std::cout << "done"<< std::endl;
+        puts("done\n");
     });
     std::thread([i = std::move(i)]() mutable {
-        std::this_thread::sleep_for(std::chrono::seconds(2));
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
         i.set_value();
-        try {
-            i.set_exception(std::make_exception_ptr(std::runtime_error("wertutueyrweurui")));
-        }
-        catch (std::exception& e) {
-            std::cout << e.what() << std::endl;
-        }
     }).join();
+    std::cout << std::thread::hardware_concurrency() << std::endl;
 
     /*namespace ctx=boost::context;
     int a;
