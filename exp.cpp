@@ -1,48 +1,31 @@
 //
 // Created by 刘予顺 on 2018/10/22.
 //
-#include <boost/context/fiber.hpp>
-#include <iostream>
 #include "Library/future.h"
+#include <cstdlib>
 
-/*template <class Func, class ...Ts>
-void async_invoke(Func __fn, Ts&&... args) {
-    constexpr bool __noexcept_inv = noexcept(__fn(std::forward<Ts>(args)...));
-    using __result_t = std::result_of_t<std::decay_t<Func>(Ts...)>;
-    promise<__result_t> __promise;
-    try {
+using namespace task;
 
-    }
+auto sleep_and_output() {
+    promise<void> _;
+    auto fu = _.get_future();
+    std::thread([_ = std::move(_)]() mutable {
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+        puts("e1");
+        _.set_exception_suppress_check(std::make_exception_ptr(std::runtime_error("some error")));
+    }).detach();
+    return fu;
+}
 
-}*/
+void fn1() noexcept {
+    puts("en");
+    await(sleep_and_output());
+    puts("ex");
+}
 
 int main() {
-    promise<void> i{};
-    auto fut = i.get_future().then([](auto&& fut) {
-        puts("done\n");
-    });
-    std::thread([i = std::move(i)]() mutable {
-        std::this_thread::sleep_for(std::chrono::milliseconds(2));
-        i.set_value();
-    }).join();
-    std::cout << std::thread::hardware_concurrency() << std::endl;
-
-    /*namespace ctx=boost::context;
-    int a;
-    ctx::stack_traits::default_size();
-    ctx::fiber source{[&a](ctx::fiber&& sink){
-        a=0;
-        int b=1;
-        for(;;){
-            sink=std::move(sink).resume();
-            int next=a+b;
-            a=b;
-            b=next;
-        }
-        return std::move(sink);
-    }};
-    for (int j=0;j<1;++j) {
-        source=std::move(source).resume();
-        std::cout << a << " ";
-    }*/
+    auto fu = async(fn1);
+    puts("re");
+    fu.get();
+    puts("do");
 }
