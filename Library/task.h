@@ -3,6 +3,7 @@
 namespace task {
     class task {
         friend class TaskQueue;
+        friend class Worker;
     public:
         virtual ~task() = default;
         virtual void fire() noexcept = 0;

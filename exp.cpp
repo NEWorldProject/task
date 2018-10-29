@@ -3,16 +3,13 @@
 //
 #include "Library/future.h"
 #include <cstdlib>
+#include <iostream>
 
-using namespace task;
-
-auto sleep_and_output() {
+/*auto sleep_and_output() {
     promise<void> _;
     auto fu = _.get_future();
     std::thread([_ = std::move(_)]() mutable {
-        std::this_thread::sleep_for(std::chrono::seconds(2));
-        puts("e1");
-        _.set_exception_suppress_check(std::make_exception_ptr(std::runtime_error("some error")));
+        _.set_value_suppress_check();
     }).detach();
     return fu;
 }
@@ -21,11 +18,25 @@ void fn1() noexcept {
     puts("en");
     await(sleep_and_output());
     puts("ex");
-}
+}*/
+
+std::atomic_int i {0};
+struct t : task::task {
+    void fire() noexcept override { ++i; }
+};
+
+struct s : task::task {
+    ::task::promise<void> p;
+    void fire() noexcept override { p.set_value(); }
+};
 
 int main() {
-    auto fu = async(fn1);
-    puts("re");
-    fu.get();
-    puts("do");
+    t _;
+    for (int i = 0; i < 1000000; ++i)
+        task::enqueue_one(new t, 7);
+    s ss;
+    task::enqueue_one(&ss, 6);
+    puts(i == 1000000 ? "Y" : "N");
+    ss.p.get_future().wait();
+    return 0;
 }

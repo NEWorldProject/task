@@ -1,42 +1,14 @@
+#include <array>
 #include <atomic>
 #include <thread>
 #include <vector>
 #include "task.h"
+#include "event.h"
+#include "spin_lock.h"
 
-#if __has_include(<x86intrin.h>)
-#include <x86intrin.h>
-#include <array>
-#define IDLE _mm_pause()
-#elif __has_include(<intrin.h>)
-#include <intrin.h>
-#define IDLE _mm_pause()
-#else
-#define IDLE
-#endif
-
-#define MAX_WAIT_ITERS 50
 namespace task {
     namespace {
         constexpr int PriorityLevels = 16;
-        constexpr int hardware_destructive_interference_size = 64;
-
-        class SpinLock {
-        public:
-            void Enter() noexcept { while (Locked.exchange(true, std::memory_order_acquire)) WaitUntilLockIsFree(); }
-
-            void Leave() noexcept { Locked.store(false, std::memory_order_relaxed); }
-        private:
-            void WaitUntilLockIsFree() const noexcept {
-                size_t iters = 0;
-                while (Locked.load(std::memory_order_relaxed)) {
-                    if (iters++<MAX_WAIT_ITERS)
-                        IDLE;
-                    else
-                        std::this_thread::yield();
-                }
-            }
-            alignas(hardware_destructive_interference_size) std::atomic_bool Locked = {false};
-        };
     }
 
     class TaskQueue {
@@ -70,22 +42,22 @@ namespace task {
         class BasicDispatcher {
         public:
             void EnqueueOne(task* dispatchee, int level) noexcept {
-                _Lock.Enter();
+                _Lock.enter();
                 _DispatchQueues[level].EnqueueOne(dispatchee);
-                _Lock.Leave();
+                _Lock.leave();
             }
 
             task* DispatchOne() noexcept {
                 task* ret = nullptr;
-                _Lock.Enter();
+                _Lock.enter();
                 for (int i = PriorityLevels-1; i>-1; --i)
                     if (ret = _DispatchQueues[i].DequeueOne(), ret)
                         break;
-                _Lock.Leave();
+                _Lock.leave();
                 return ret;
             }
         private:
-            SpinLock _Lock;
+            spin_lock _Lock;
             std::array<TaskQueue, PriorityLevels> _DispatchQueues;
         };
 
@@ -113,7 +85,8 @@ namespace task {
 
             ~ThreadPool() {
                 EnqueueOne(&_StopTask, 0);
-                while (_BlockedThreads)
+                _Idle.signal_all();
+                while(_BlockedThreads)
                     WakeOne();
             }
 
@@ -129,9 +102,8 @@ namespace task {
             }
 
             void ThreadEnterIdleRegion() {
-                std::unique_lock<std::mutex> __lk(_Mtx);
                 ++_BlockedThreads;
-                _Cond.wait(__lk);
+                _Idle.wait();
                 --_BlockedThreads;
             }
 
@@ -150,10 +122,8 @@ namespace task {
             }
 
             void WakeOne() {
-                if (_BlockedThreads) {
-                    std::lock_guard<std::mutex> __lk(_Mtx);
-                    _Cond.notify_one();
-                }
+                if (_BlockedThreads)
+                    _Idle.signal_one();
             }
 
             struct : task {
@@ -162,8 +132,7 @@ namespace task {
             } _StopTask;
 
             bool _Stop = false;
-            std::mutex _Mtx;
-            std::condition_variable _Cond;
+            notification _Idle;
             std::atomic_int _BlockedThreads = 0;
             BasicDispatcher _Dispatcher;
             ThreadGroup _Threads;
