@@ -1,22 +1,34 @@
-cmake_minimum_required(VERSION 3.12)
+cmake_minimum_required(VERSION 3.10)
 project(task)
 set(CMAKE_CXX_STANDARD 17)
 
-set(Boost_USE_STATIC_LIBS ON)
-find_package(Boost REQUIRED COMPONENTS context)
-
-file(GLOB_RECURSE SRC Library/*)
-add_library(task SHARED ${SRC})
-target_link_libraries(task PRIVATE Boost::context)
-#System Check
+file(GLOB SRC Library/Details/*)
+file(GLOB_RECURSE INC Library/Headers/*)
+#System Check and Add Platform-Specific Source
 if (WIN32)
-    target_compile_definitions(task PUBLIC -DTASK_TARGET_WINDOWS)
-elseif (APPLE)
-    target_compile_definitions(task PUBLIC -DTASK_TARGET_APPLE)
+    file(GLOB_RECURSE SRC_PLATFORM Library/Details/Win64NT6/*)
+	set(TARGET_MACRO -DTASK_TARGET_WINDOWS)
 elseif (UNIX)
-    # We Assume Unix Systems Use X11 Desktop except APPL
-    target_compile_definitions(task PUBLIC -DTASK_TARGET_UNIX_X11)
+    file(GLOB SRC_PLATFORM_SHARED Library/Details/Unix/*)
+	set(TARGET_MACRO -DTASK_TARGET_POSIX)
+    if (APPLE)    
+        file(GLOB_RECURSE SRC_PLATFORM_UNIQUE Library/Details/Unix/Darwin/*)
+		list(APPEND TARGET_MACRO -DTASK_TARGET_DARWIN)
+    else()
+        file(GLOB_RECURSE SRC_PLATFORM_UNIQUE Library/Details/Unix/Generic/*)
+		list(APPEND TARGET_MACRO -DTASK_TARGET_UNIX_GENERIC)
+	endif()
+    set(Boost_USE_STATIC_LIBS ON)
+    find_package(Boost REQUIRED COMPONENTS context)
+	set(TARGET_LIBS Boost::context)
+	set(SRC_PLATFORM ${SRC_PLATFORM_SHARED} ${SRC_PLATFORM_UNIQUE})
 endif ()
+
+add_library(task SHARED ${INC} ${SRC} ${SRC_PLATFORM})
+target_include_directories(task PUBLIC Library/Headers)
+target_compile_definitions(task PUBLIC ${TARGET_MACRO} -DTASK_EXPORTS)
+target_link_libraries(task PRIVATE ${TARGET_LIBS})
+
 # Enable IPO
 include(CheckIPOSupported)
 check_ipo_supported(RESULT HAS_IPO OUTPUT MESSAGE)
@@ -28,5 +40,3 @@ endif()
 
 add_executable(task_exp exp.cpp)
 target_link_libraries(task_exp PRIVATE task)
-
-

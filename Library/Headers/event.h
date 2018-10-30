@@ -2,17 +2,17 @@
 
 #if __has_include(<mach/semaphore.h>)
 #include <mach/semaphore.h>
-#define __TASK_EVENT_IMPL_MACK_SEM
+#define __TASK_EVENT_IMPL_MACH_SEM
 namespace task::__detail {
     struct __notification_impl {
-        void __init() noexcept;
-        
-        void __deinit() noexcept;
-        
+        __notification_impl() noexcept;
+
+        ~__notification_impl() noexcept;
+
         void __wait() noexcept { semaphore_wait(__sem); }
 
         void __signal_one() noexcept { semaphore_signal(__sem); }
-        
+
         void __signal_all() noexcept { semaphore_signal_all(__sem); }
 
         semaphore_t __sem;
@@ -48,12 +48,16 @@ namespace task::__detail {
 namespace task {
     class notification {
     public:
-        notification() noexcept { __impl.__init(); }
-        ~notification() noexcept { __impl.__deinit(); }
+        notification() noexcept = default;
+
+        ~notification() noexcept = default;
+
         void wait() noexcept { __impl.__wait(); }
+
         void signal_one() noexcept { __impl.__signal_one(); }
+
         void signal_all() noexcept { __impl.__signal_all(); }
     private:
-        __detail::__notification_impl __impl;
+        __detail::__notification_impl __impl{};
     };
 }

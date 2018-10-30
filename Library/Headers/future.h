@@ -4,6 +4,7 @@
 #include <atomic>
 #include <thread>
 #include <cstddef>
+#include <utility>
 #include <functional>
 #include <type_traits>
 #include <condition_variable>
@@ -29,7 +30,7 @@ namespace task {
         no_state = 3
     };
 
-    class future_error : public std::logic_error {
+    class TASK_API future_error : public std::logic_error {
     public:
         explicit future_error(future_errc ec);
 
@@ -351,7 +352,7 @@ namespace task {
             explicit __pad(Func& fn)
                     :__fn(std::move(fn)) { }
             void fire() noexcept override;
-            void __invoke() noexcept(noexcept(__fn(__st)));
+            void __invoke();
             Func __fn;
             promise<__result_t> __promise;
             future<T> __st;
@@ -568,7 +569,7 @@ namespace task {
 
     template <class T>
     template <class Func>
-    void __future_base<T>::__pad<Func>::__invoke() noexcept(noexcept(__fn(__st))) {
+    void __future_base<T>::__pad<Func>::__invoke() {
         if constexpr (std::is_same_v<__result_t, void>) {
             __fn(this->__st);
             __promise.set_value_suppress_check();
@@ -577,6 +578,82 @@ namespace task {
             __promise.set_value_suppress_check(__fn(__st));
     }
 
+#if __has_include(<concrt.h>)
+}
+#include <concrt.h>
+namespace task {
+        namespace __detail {
+            template <class Callable, class ...Ts>
+            class apc : public task {
+                using ReturnType = std::result_of_t<std::decay_t<Callable>(std::decay_t<Ts>...)>;
+                template <typename F, typename T, std::size_t... I>
+                static auto apply_impl(F f, const T& t, std::index_sequence<I...>) {
+                    return f(std::get<I>(t)...);
+                }
+
+                template <typename F, typename T>
+                static auto apply(F f, const T& t) {
+                    return apply_mpl(f, t, std::make_index_sequence<std::tuple_size<T>::value>());
+                }
+
+                template <class T, class U>
+                static void apply_to(U& promise, Callable& callable, std::tuple<Ts...>& tuple) {
+                    if constexpr(std::is_same_v<T, void>) {
+                        apply(callable, tuple);
+                        promise.set();
+                    }
+                    else
+                        promise.set(Apply(callable, tuple));
+                }
+            public:
+                apc(Callable call, Ts&& ... args)
+                        :__fn(call), __args(std::forward_as_tuple(args...)) { }
+                auto get_future() { return __promise.get_future(); }
+                void fire() noexcept override {
+                    try {
+                        apply_to(__promise, __fn, __args);
+                    }
+                    catch (...) {
+                        __promise.set_exception_suppress_check(std::current_exception());
+                    }
+                    delete this;
+                }
+            private:
+                Callable __fn;
+                std::tuple<Ts...> __args;
+                promise<ReturnType> __promise{};
+            };
+        }
+
+        template <class Func, class ...Ts>
+        inline auto async(Func __fn, Ts&& ... args) {
+            auto _ = new __detail::apc(__fn, std::forward<Ts>(args)...);
+            auto future = _.get_future();
+            enqueue_one(_, get_current_thread_priority());
+            return future;
+        }
+
+        template <template <class> class Cont, class U>
+        inline U await(Cont<U> cont) {
+            if constexpr (std::is_same_v<U, void>) {
+                auto fu = cont.then([ctx = Concurrency::Context::CurrentContext()](auto&& lst) {
+                    ctx->Unblock();
+                    lst.get();
+                });
+                Concurrency::Context::Block();
+                fu.get();
+            }
+            else {
+                auto fu = cont.then([ctx = Concurrency::Context::CurrentContext()](auto&& lst) {
+                    ctx->Unblock();
+                    return lst.get();
+                });
+                Concurrency::Context::Block();
+                return fu.get();
+            }
+        }
+
+#else
     void __async_call(std::function<void()>) noexcept;
 
     void __async_resume_previous() noexcept;
@@ -584,7 +661,7 @@ namespace task {
     task* __async_get_current() noexcept;
 
     template <template <class> class Cont, class U>
-    U await(Cont<U> cont) {
+    inline U await(Cont<U> cont) {
         if constexpr (std::is_same_v<U, void>) {
             auto fu = cont.then([task = __async_get_current()](auto&& lst) {
                 enqueue_one(task, get_current_thread_priority());
@@ -604,7 +681,7 @@ namespace task {
     }
 
     template <class Func, class ...Ts>
-    auto async(Func __fn, Ts&& ... args) {
+    inline auto async(Func __fn, Ts&& ... args) {
         using __result_t = std::result_of_t<std::decay_t<Func>(Ts...)>;
         promise<__result_t> __promise{};
         auto future = __promise.get_future();
@@ -624,4 +701,5 @@ namespace task {
         });
         return future;
     }
+#endif
 }
