@@ -5,7 +5,6 @@
 #include <thread>
 #include <cstddef>
 #include <utility>
-#include <functional>
 #include <type_traits>
 #include <condition_variable>
 
@@ -30,9 +29,9 @@ namespace task {
         no_state = 3
     };
 
-    class TASK_API future_error : public std::logic_error {
+    class future_error : public std::logic_error {
     public:
-        explicit future_error(future_errc ec);
+        TASK_API explicit future_error(future_errc ec);
 
         const auto& code() const noexcept { return __code; }
 
@@ -42,10 +41,9 @@ namespace task {
     };
 
     class __shared_assoc_state_base {
-    private:
         // Frequent Use, kept apart with others
         mutable std::atomic<uintptr_t> __lock{0};
-    private:
+
         // state control
         enum __lck_bits {
             spin_bit = 0b1,
@@ -63,22 +61,20 @@ namespace task {
             return reinterpret_cast<__sync_pmr_data*>(__lock.load() & (~uintptr_t(pmr_bit_rev)));
         }
 
-        bool __have_pmr_data() const noexcept { return __get_pmr_address(); }
-
         auto __enable_pmr() const {
             auto __new_pmr = new(&__free_store) __sync_pmr_data();
             __lock.fetch_or(reinterpret_cast<uintptr_t>(__new_pmr));
             return __new_pmr;
         }
 
-        void __notify_if_has_pmr() noexcept {
+        void __notify_if_has_pmr() const noexcept {
             if (auto __pmr = __get_pmr_address(); __pmr) {
                 std::lock_guard<std::mutex> __lk(__pmr->__m);
                 __pmr->__v.notify_all();
             }
         }
 
-        bool __try_acquire_write_access() noexcept {
+        bool __try_acquire_write_access() const noexcept {
             size_t __iters = 0;
             for (;;) {
                 while (__check_write_bit() && (!__check_ready_bit()))
@@ -112,7 +108,7 @@ namespace task {
             return pmr;
         }
     protected:
-        void __prepare_write() {
+        void __prepare_write() const {
             auto success = __try_acquire_write_access();
             if (!success) future_error::__throw(future_errc::promise_already_satisfied);
         }
@@ -123,7 +119,7 @@ namespace task {
             __fire_task();
         }
 
-        void __prepare_write_suppress_check() noexcept { }
+        void __prepare_write_suppress_check() const noexcept { }
 
         void __complete_write_suppress_check() noexcept {
             __lock.fetch_or(ready_bit | write_bit);
@@ -131,7 +127,7 @@ namespace task {
             __fire_task();
         }
 
-        void __cancel_write() noexcept { __lock.fetch_and(~uintptr_t(write_bit)); }
+        void __cancel_write() const noexcept { __lock.fetch_and(~uintptr_t(write_bit)); }
     public:
         void wait() const {
             if (!is_ready()) {
@@ -166,9 +162,9 @@ namespace task {
 
         bool __check_ready_not_expire() const noexcept { return __check_ready_bit() && __check_write_bit(); }
 
-        void __make_expire() noexcept { __lock.fetch_and(~uintptr_t(write_bit)); }
+        void __make_expire() const noexcept { __lock.fetch_and(~uintptr_t(write_bit)); }
     protected:
-        void __prepare_get() {
+        void __prepare_get() const {
             wait();
             __acquire_spin_lock();
             if (!__check_ready_not_expire()) {
@@ -177,38 +173,26 @@ namespace task {
             }
             __make_expire();
             __release_spin_lock();
-            if (__excp)
-                std::rethrow_exception(__excp);
+            if (exception_ptr)
+                std::rethrow_exception(exception_ptr);
         }
     public:
         bool __is_satisfied() const noexcept { return __check_ready_bit(); }
-        bool valid() const noexcept { return __check_ready_not_expire() && __contiune==nullptr; }
-        // Continable
+        bool valid() const noexcept { return __check_ready_not_expire() && _continue==nullptr; }
+        // Continuable
     public:
-        struct __task : task {
-            bool __call_inplace = false;
-        };
-
-        void __set_task(__task* _task) noexcept {
-            auto prev = __contiune.exchange(_task);
-            if (prev) __fire_task();
+        void __set_task(task* _task) noexcept {
+            auto prev = _continue.exchange(_task);
+            if (prev==reinterpret_cast<task*>(uintptr_t(~0))) __fire_task();
         }
     private:
-        std::atomic<__task*> __contiune{nullptr};
+        std::atomic<task*> _continue{nullptr};
 
-        __task* __get_task() noexcept { return __contiune.exchange(reinterpret_cast<__task*>(uintptr_t(~0))); }
-
-        static void __thread_pool_dispatch_one_with_current_piro(task* __task) {
-            enqueue_one(__task, get_current_thread_priority());
-        }
+        task* __get_task() noexcept { return _continue.exchange(reinterpret_cast<task*>(uintptr_t(~0))); }
 
         void __fire_task() noexcept {
-            if (auto __task = __get_task(); __task) {
-                if (__task->__call_inplace)
-                    __task->fire();
-                else
-                    __thread_pool_dispatch_one_with_current_piro(__task);
-            }
+            if (auto __task = __get_task(); __task)
+                __task->fire();
         }
     public:
         virtual ~__shared_assoc_state_base() { if (auto _ = __get_pmr_address(); _) _->~__sync_pmr_data(); }
@@ -216,23 +200,23 @@ namespace task {
     private:
         // Data Store
         mutable std::atomic_int __ref{0};
-        std::exception_ptr __excp = nullptr;
+        std::exception_ptr exception_ptr = nullptr;
     public:
         void set_exception(std::exception_ptr p) {
             __prepare_write();
-            __excp = p;
+            exception_ptr = p;
             __complete_write();
         }
 
         void set_exception_suppress_check(std::exception_ptr p) {
             __prepare_write_suppress_check();
-            __excp = p;
+            exception_ptr = p;
             __complete_write_suppress_check();
         }
 
-        void __acquire() noexcept { __ref.fetch_add(1); }
+        void __acquire() const noexcept { __ref.fetch_add(1); }
 
-        void __release() noexcept { if (__ref.fetch_sub(1)==1) delete this; }
+        void __release() const noexcept { if (__ref.fetch_sub(1)==1) delete this; }
     private:
         mutable std::aligned_storage_t<sizeof(__sync_pmr_data), alignof(__sync_pmr_data)> __free_store;
     };
@@ -328,7 +312,7 @@ namespace task {
             __complete_write_suppress_check();
         }
 
-        void get() { __prepare_get(); }
+        void get() const { __prepare_get(); }
     };
 
     template <class T>
@@ -340,23 +324,66 @@ namespace task {
     template <class T>
     class promise;
 
+    template <class Callable, class ...Ts>
+    class defer_callable {
+        template <std::size_t... I>
+        auto apply_impl(std::index_sequence<I...>) { return __fn(std::move(std::get<I>(__args))...); }
+    protected:
+        using return_type = std::invoke_result_t<std::decay_t<Callable>, std::decay_t<Ts>...>;
+    public:
+        explicit defer_callable(Callable&& call, Ts&& ... args)
+                :__fn(std::forward<Callable>(call)), __args(std::forward<Ts>(args)...) { }
+        auto call() { return apply_impl(std::make_index_sequence<std::tuple_size<typeof(__args)>::value>()); }
+    private:
+        Callable __fn;
+        std::tuple<Ts...> __args;
+    };
+
+    template <class Callable>
+    class defer_callable<Callable> {
+    protected:
+        using return_type = std::invoke_result_t<std::decay_t<Callable>>;
+    public:
+        explicit defer_callable(Callable&& call)
+                :__fn(std::forward<Callable>(call)) { }
+        auto call() { return __fn(); }
+    private:
+        Callable __fn;
+    };
+
+    template <class Callable, class ...Ts>
+    class defer_procedure_call_task : public task, defer_callable<Callable, Ts...> {
+    public:
+        using return_type = typename defer_callable<Callable, Ts...>::return_type;
+
+        explicit defer_procedure_call_task(Callable&& call, Ts&& ... args)
+                :defer_callable<Callable, Ts...>(std::forward<Callable>(call), std::forward<Ts>(args)...) { }
+
+        void fire() noexcept override {
+            try {
+                if constexpr(std::is_same_v<return_type, void>) {
+                    defer_callable<Callable, Ts...>::call();
+                    __promise.set_value_suppress_check();
+                }
+                else
+                    __promise.set_value_suppress_check(defer_callable<Callable, Ts...>::call());
+            }
+            catch (...) {
+                __promise.set_exception_suppress_check(std::current_exception());
+            }
+            delete this;
+        }
+
+        auto get_future() { return __promise.get_future(); }
+    private:
+        promise<return_type> __promise{};
+    };
+
     template <class T>
     class __future_base {
     protected:
         explicit __future_base(__shared_assoc_state<T>* _) noexcept
                 :__st(_) { __st->__acquire(); }
-    private:
-        template <class Func>
-        struct __pad final : __shared_assoc_state_base::__task {
-            using __result_t = std::result_of_t<std::decay_t<Func>(future<T>)>;
-            explicit __pad(Func& fn)
-                    :__fn(std::move(fn)) { }
-            void fire() noexcept override;
-            void __invoke();
-            Func __fn;
-            promise<__result_t> __promise;
-            future<T> __st;
-        };
     public:
         __future_base() = default;
 
@@ -393,12 +420,15 @@ namespace task {
         }
 
         template <class Func>
-        future<typename __pad<Func>::__result_t> then(Func fn) {
-            auto __task = new __pad<Func>(fn);
-            __task->__st = future(nullptr, __st);
-            __st->__set_task(__task);
+        auto then(Func fn) {
+            auto __task = std::make_unique<defer_procedure_call_task<std::decay_t<Func>, future<T>>>(
+                    std::forward<std::decay_t<Func>>(std::move(fn)),
+                    future(nullptr, __st)
+            );
+            auto __fut = __task->get_future();
+            __st->__set_task(__task.release());
             __st = nullptr;
-            return __task->__promise.get_future();
+            return __fut;
         }
     protected:
         void __release_state() noexcept {
@@ -551,117 +581,66 @@ namespace task {
         void set_value_suppress_check() noexcept { __get_state().set_value_suppress_check(); }
     };
 
-    template <class T>
-    template <class Func>
-    void __future_base<T>::__pad<Func>::fire() noexcept {
-        if constexpr(noexcept(__fn(__st)))
-            __invoke();
-        else
-            try {
-                __invoke();
-            }
-            catch (...) {
-                __promise.set_exception_suppress_check(std::current_exception());
-            }
-        // TODO: Adopt Correct Behavior. Even if the object dies here, it does not necessarily own the memory it occupies
-        delete this;
+    namespace __detail {
+        template <class T>
+        struct __packed_task_extract_base {
+            using __base = T;
+        };
     }
 
     template <class T>
-    template <class Func>
-    void __future_base<T>::__pad<Func>::__invoke() {
-        if constexpr (std::is_same_v<__result_t, void>) {
-            __fn(this->__st);
-            __promise.set_value_suppress_check();
-        }
-        else
-            __promise.set_value_suppress_check(__fn(__st));
-    }
+    class packaged_task;
+
+    template <class R, class ...Args>
+    class packaged_task<R(Args...)> : __detail::__packed_task_extract_base<R(Args...)> {
+
+    };
 
 #if __has_include(<concrt.h>)
 }
 #include <concrt.h>
 namespace task {
-        namespace __detail {
-            template <class Callable, class ...Ts>
-            class apc : public task {
-                using ReturnType = std::result_of_t<std::decay_t<Callable>(std::decay_t<Ts>...)>;
-                template <typename F, typename T, std::size_t... I>
-                static auto apply_impl(F f, const T& t, std::index_sequence<I...>) {
-                    return f(std::get<I>(t)...);
-                }
+    template <class Func, class ...Ts>
+    auto async(Func __fn, Ts&& ... args) {
+        auto inner_task = std::make_unique<defer_procedure_call_task>(
+                std::forward<std::decay_t<Func>>(std::move(__fn)),
+                std::forward<Ts>(args)...
+        );
+        auto future = inner_task->get_future();
+        auto to_invoke = inner_task.release();
+        enqueue_one(to_invoke, get_current_thread_priority());
+        return future;
+    }
 
-                template <typename F, typename T>
-                static auto apply(F f, const T& t) {
-                    return apply_mpl(f, t, std::make_index_sequence<std::tuple_size<T>::value>());
-                }
-
-                template <class T, class U>
-                static void apply_to(U& promise, Callable& callable, std::tuple<Ts...>& tuple) {
-                    if constexpr(std::is_same_v<T, void>) {
-                        apply(callable, tuple);
-                        promise.set();
-                    }
-                    else
-                        promise.set(Apply(callable, tuple));
-                }
-            public:
-                apc(Callable call, Ts&& ... args)
-                        :__fn(call), __args(std::forward_as_tuple(args...)) { }
-                auto get_future() { return __promise.get_future(); }
-                void fire() noexcept override {
-                    try {
-                        apply_to(__promise, __fn, __args);
-                    }
-                    catch (...) {
-                        __promise.set_exception_suppress_check(std::current_exception());
-                    }
-                    delete this;
-                }
-            private:
-                Callable __fn;
-                std::tuple<Ts...> __args;
-                promise<ReturnType> __promise{};
-            };
+    template <template <class> class Cont, class U>
+    U await(Cont<U> cont) {
+        if constexpr (std::is_same_v<U, void>) {
+            auto fu = cont.then([ctx = Concurrency::Context::CurrentContext()](auto&& lst) {
+                ctx->Unblock();
+                lst.get();
+            });
+            Concurrency::Context::Block();
+            fu.get();
         }
-
-        template <class Func, class ...Ts>
-        inline auto async(Func __fn, Ts&& ... args) {
-            auto _ = new __detail::apc(__fn, std::forward<Ts>(args)...);
-            auto future = _.get_future();
-            enqueue_one(_, get_current_thread_priority());
-            return future;
+        else {
+            auto fu = cont.then([ctx = Concurrency::Context::CurrentContext()](auto&& lst) {
+                ctx->Unblock();
+                return lst.get();
+            });
+            Concurrency::Context::Block();
+            return fu.get();
         }
-
-        template <template <class> class Cont, class U>
-        inline U await(Cont<U> cont) {
-            if constexpr (std::is_same_v<U, void>) {
-                auto fu = cont.then([ctx = Concurrency::Context::CurrentContext()](auto&& lst) {
-                    ctx->Unblock();
-                    lst.get();
-                });
-                Concurrency::Context::Block();
-                fu.get();
-            }
-            else {
-                auto fu = cont.then([ctx = Concurrency::Context::CurrentContext()](auto&& lst) {
-                    ctx->Unblock();
-                    return lst.get();
-                });
-                Concurrency::Context::Block();
-                return fu.get();
-            }
-        }
+    }
 
 #else
-    void __async_call(std::function<void()>) noexcept;
+    void __async_call(task*) noexcept;
 
     void __async_resume_previous() noexcept;
 
     task* __async_get_current() noexcept;
 
     template <template <class> class Cont, class U>
-    inline U await(Cont<U> cont) {
+    U await(Cont<U> cont) {
         if constexpr (std::is_same_v<U, void>) {
             auto fu = cont.then([task = __async_get_current()](auto&& lst) {
                 enqueue_one(task, get_current_thread_priority());
@@ -681,24 +660,14 @@ namespace task {
     }
 
     template <class Func, class ...Ts>
-    inline auto async(Func __fn, Ts&& ... args) {
-        using __result_t = std::result_of_t<std::decay_t<Func>(Ts...)>;
-        promise<__result_t> __promise{};
-        auto future = __promise.get_future();
-        __async_call([&]() mutable noexcept {
-            auto __ = std::move(__promise);
-            try {
-                if constexpr (std::is_same_v<__result_t, void>) {
-                    __fn(std::forward<Ts>(args)...);
-                    __.set_value_suppress_check();
-                }
-                else
-                    __.set_value_suppress_check(__fn(std::forward<Ts>(args)...));
-            }
-            catch (...) {
-                __.set_exception_suppress_check(std::current_exception());
-            }
-        });
+    auto async(Func __fn, Ts&& ... args) {
+        auto inner_task = std::make_unique<defer_procedure_call_task<std::decay_t<Func>, Ts...>>(
+                std::forward<std::decay_t<Func>>(std::move(__fn)),
+                std::forward<Ts>(args)...
+        );
+        auto future = inner_task->get_future();
+        auto to_invoke = inner_task.release();
+        __async_call(to_invoke);
         return future;
     }
 #endif

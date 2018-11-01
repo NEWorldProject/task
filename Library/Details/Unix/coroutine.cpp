@@ -8,11 +8,11 @@
 namespace {
     class async_exec_task : public task::task {
     public:
-        explicit async_exec_task(std::function<void()> fn)
+        explicit async_exec_task(task* inner)
                 :
-                _Current(boost::context::fiber([this, fn = std::move(fn)](boost::context::fiber&& sink) mutable {
+                _Current(boost::context::fiber([this, inner](boost::context::fiber&& sink) mutable noexcept {
                     _Sink = std::move(sink);
-                    fn();
+                    inner->fire();
                     return std::move(_Sink);
                 })) { }
         void fire() noexcept override;
@@ -36,5 +36,5 @@ namespace task {
 
     task* __async_get_current() noexcept { return exec_task; }
 
-    void __async_call(std::function<void()> fn) noexcept { (new async_exec_task(std::move(fn)))->fire(); }
+    void __async_call(task* inner) noexcept { (new async_exec_task(inner))->fire(); }
 }

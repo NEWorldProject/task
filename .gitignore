@@ -68,3 +68,6 @@ fabric.properties
 # macOS Filesystem Generated Files
 *.DS_Store
 
+# Visual Studio Files
+.vs/
+/CMakeSettings.json

@@ -2,7 +2,7 @@
 
 #ifdef __TASK_TASK_IMPL_CCRT
 #include <concrt.h>
-#include "windows_slim.h"
+#include "__support/windows.h"
 namespace task {
     using namespace Concurrency;
     namespace {
