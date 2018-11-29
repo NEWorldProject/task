@@ -333,7 +333,7 @@ namespace task {
     public:
         explicit defer_callable(Callable&& call, Ts&& ... args)
                 :__fn(std::forward<Callable>(call)), __args(std::forward<Ts>(args)...) { }
-        auto call() { return apply_impl(std::make_index_sequence<std::tuple_size<typeof(__args)>::value>()); }
+        auto call() { return apply_impl(std::make_index_sequence<std::tuple_size<decltype(__args)>::value>()); }
     private:
         Callable __fn;
         std::tuple<Ts...> __args;
@@ -602,13 +602,12 @@ namespace task {
 namespace task {
     template <class Func, class ...Ts>
     auto async(Func __fn, Ts&& ... args) {
-        auto inner_task = std::make_unique<defer_procedure_call_task>(
+        auto inner_task = new defer_procedure_call_task(
                 std::forward<std::decay_t<Func>>(std::move(__fn)),
                 std::forward<Ts>(args)...
         );
         auto future = inner_task->get_future();
-        auto to_invoke = inner_task.release();
-        enqueue_one(to_invoke, get_current_thread_priority());
+        enqueue_one(inner_task, get_current_thread_priority());
         return future;
     }
 
@@ -630,6 +629,10 @@ namespace task {
             Concurrency::Context::Block();
             return fu.get();
         }
+        if constexpr (std::is_same_v<U, void>)
+            cont.get()
+        else
+            return cont.get()
     }
 
 #else
@@ -661,13 +664,12 @@ namespace task {
 
     template <class Func, class ...Ts>
     auto async(Func __fn, Ts&& ... args) {
-        auto inner_task = std::make_unique<defer_procedure_call_task<std::decay_t<Func>, Ts...>>(
+        auto inner_task = new defer_procedure_call_task(
                 std::forward<std::decay_t<Func>>(std::move(__fn)),
                 std::forward<Ts>(args)...
         );
         auto future = inner_task->get_future();
-        auto to_invoke = inner_task.release();
-        __async_call(to_invoke);
+        __async_call(inner_task);
         return future;
     }
 #endif

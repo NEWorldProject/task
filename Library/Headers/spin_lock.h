@@ -1,5 +1,6 @@
 #pragma once
-
+#ifndef NEWORLD_SYNC_PMR
+#define NEWORLD_SYNC_PMR
 #if __has_include(<x86intrin.h>)
 #include <x86intrin.h>
 #define IDLE _mm_pause()
@@ -32,3 +33,4 @@ namespace task {
         alignas(64) std::atomic_bool __lock = {false};
     };
 }
+#endif

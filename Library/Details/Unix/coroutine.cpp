@@ -6,6 +6,7 @@
 #include "future.h"
 
 namespace {
+    
     class async_exec_task : public task::task {
     public:
         explicit async_exec_task(task* inner)
@@ -36,5 +37,7 @@ namespace task {
 
     task* __async_get_current() noexcept { return exec_task; }
 
-    void __async_call(task* inner) noexcept { (new async_exec_task(inner))->fire(); }
+    void __async_call(task* inner) noexcept {
+        enqueue_one(new async_exec_task(inner), get_current_thread_priority());
+    }
 }

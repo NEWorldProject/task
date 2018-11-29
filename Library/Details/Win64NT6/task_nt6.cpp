@@ -13,6 +13,7 @@ namespace task {
         struct Init {
             static Scheduler* Create(int pr) noexcept {
                 SchedulerPolicy policy;
+                policy.SetPolicyValue(SchedulerKind, UmsThreadDefault);
                 policy.SetPolicyValue(ContextPriority, _Priorities[pr]);
                 return Scheduler::Create(policy);
             }
