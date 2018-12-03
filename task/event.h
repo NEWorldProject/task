@@ -13,13 +13,13 @@ namespace task::__detail {
 
     void __release(semaphore_t sem) noexcept;
 
-    semaphore_t __alloc_semaphore_direct() noexcept {
+    inline semaphore_t __alloc_semaphore_direct() noexcept {
         semaphore_t ret;
         semaphore_create(mach_task_self(), &ret, SYNC_POLICY_FIFO, 0);
         return ret;
     }
 
-    void __release_semaphore_direct(semaphore_t sem) noexcept {
+    inline void __release_semaphore_direct(semaphore_t sem) noexcept {
         semaphore_destroy(mach_task_self(), sem);
     }
 

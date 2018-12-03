@@ -17,7 +17,7 @@
 #define _ENABLE_ATOMIC_ALIGNMENT_FIX
 #endif
 
-#ifdef TASK_EXPORTS
+#ifdef NW_TASK_EXPORTS
 #define TASK_API EXPORT
 #else
 #define TASK_API IMPORT

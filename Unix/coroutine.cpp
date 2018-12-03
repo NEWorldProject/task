@@ -3,10 +3,10 @@
 //
 
 #include <boost/context/fiber.hpp>
-#include "future.h"
+#include "task/future.h"
 
+#ifdef TASK_TARGET_POSIX
 namespace {
-    
     class async_exec_task : public task::task {
     public:
         explicit async_exec_task(task* inner)
@@ -41,3 +41,4 @@ namespace task {
         enqueue_one(new async_exec_task(inner), get_current_thread_priority());
     }
 }
+#endif

@@ -202,13 +202,13 @@ namespace task {
         mutable std::atomic_int __ref{0};
         std::exception_ptr exception_ptr = nullptr;
     public:
-        void set_exception(std::exception_ptr p) {
+        void set_exception(const std::exception_ptr& p) {
             __prepare_write();
             exception_ptr = p;
             __complete_write();
         }
 
-        void set_exception_suppress_check(std::exception_ptr p) {
+        void set_exception_suppress_check(const std::exception_ptr& p) noexcept {
             __prepare_write_suppress_check();
             exception_ptr = p;
             __complete_write_suppress_check();
