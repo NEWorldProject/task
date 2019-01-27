@@ -12,6 +12,7 @@
 #endif
 
 #include <thread>
+#include <atomic>
 #define MAX_WAIT_ITERS 8000
 
 namespace task {

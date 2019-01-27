@@ -2,10 +2,10 @@
 // Created by 刘予顺 on 2018/10/25.
 //
 
-#include <boost/context/fiber.hpp>
 #include "task/future.h"
 
 #ifdef TASK_TARGET_POSIX
+#include <boost/context/fiber.hpp>
 namespace {
     class async_exec_task : public task::task {
     public:

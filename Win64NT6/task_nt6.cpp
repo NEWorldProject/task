@@ -2,7 +2,7 @@
 
 #ifdef __TASK_TASK_IMPL_CCRT
 #include <concrt.h>
-#include "__support/windows.h"
+#include "task/__support/windows.h"
 namespace task {
     using namespace Concurrency;
     namespace {
@@ -13,14 +13,13 @@ namespace task {
         struct Init {
             static Scheduler* Create(int pr) noexcept {
                 SchedulerPolicy policy;
-                policy.SetPolicyValue(SchedulerKind, UmsThreadDefault);
                 policy.SetPolicyValue(ContextPriority, _Priorities[pr]);
                 return Scheduler::Create(policy);
             }
 
             ~Init() {
-                for (int i = 0; i < 4; ++i)
-                    Queues[i]->Release();
+                for (auto& queue : Queues)
+	                queue->Release();
             }
 
             Scheduler* Queues[4] = { Create(0), Create(1), Create(2), Create(3) };

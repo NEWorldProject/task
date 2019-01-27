@@ -58,7 +58,7 @@
 #define NODEFERWINDOWPOS
 #define NOMCX
 #define WIN32_LEAN_AND_MEAN
-#include "windows.hpp"
+#include <Windows.h>
 #undef NOGDICAPMASKS
 #undef NOVIRTUALKEYCODES
 #undef NOWINMESSAGES
